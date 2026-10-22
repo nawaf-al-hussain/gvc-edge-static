@@ -1,0 +1,278 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="coi-serviceworker.js"></script><!-- B3.10-STATIC: SW injects COOP/COEP (Pages cannot set headers) so SAB/pthreads work -->
+<link rel="icon" href="data:,">
+<title>B3.5 playable-free-roam — pinned reVC miami 1b9a5897</title>
+<style>
+  html, body { margin:0; padding:0; background:#000; height:100%; overflow:hidden; }
+  canvas { width:100vw; height:100vh; display:block; image-rendering:auto; }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="640" height="448"></canvas>
+<script>
+// B3.5 production test page. Base = b3/web/index.html (B2/B3 logging, batched
+// beacons, context recorder). Adds, for the B33 bridge (see b34_pre.js):
+//   1. OPFS part seeding: gta3.img (327,487,488 B) is streamed ONCE from the
+//      webroot into 4 OPFS part files (b33-gta3-0..3.img, 81,871,872 B each —
+//      exact), chunked writer, no Blob and no JS-heap copy of the image.
+//      Fresh ephemeral browser contexts seed every load; the engine workers
+//      then self-serve (b34_pre.js opens sync access handles at glue
+//      top-level). This is the documented-good delivery path; it avoids the
+//      +327 MB RAM-resident blob fallback.
+//   2. A Worker constructor hook: every pooled pthread worker receives the
+//      {b33opfsParts,...} message on spawn and a 250 ms re-broadcast
+//      (receiver is idempotent). Verified delivery without depending on
+//      Module.PThread internals.
+window.logs = [];
+var b2buf = [];
+
+// ---- Phase 8B-4: on-page loading HUD (black-screen visibility) ----
+// The first visit pulls ~502 MB (175 MB data file + 327 MB archive seed)
+// with nothing rendered until the frontend menu comes up; this overlay
+// surfaces the b2log stream, a phase checklist and live OPFS seeding
+// progress so "black screen" is never silent. Toggle: press H.
+// Diagnostics only — DOM-only, every engine-side effect guarded.
+var b35hud = (function(){
+  var el, lines = [], phases = { seed: null, boot: null };
+  function ensure(){
+    if (el || !document.body) return;
+    el = document.createElement('div');
+    el.style.cssText = 'position:fixed;top:8px;left:8px;z-index:99999;max-width:680px;'
+      + 'background:rgba(0,0,0,.72);color:#9f9;font:11px/1.45 monospace;'
+      + 'padding:8px 10px;border:1px solid #363;border-radius:6px;'
+      + 'white-space:pre-wrap;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  function render(){
+    if (!el) return;
+    var t = ((performance.now() - (window.__b35t0 || (window.__b35t0 = performance.now())))/1000).toFixed(0);
+    var head = 'B3.5 preview — elapsed ' + t + 's   [press H to toggle this box]'
+      + '\nfirst visit downloads ~502 MB — black screen until the menu appears;'
+      + '\nconsole 404s (/log, favicon) are harmless noise'
+      + '\nisolated=' + (window.crossOriginIsolated === true ? 'yes' : 'NO')
+      + ' | seed=' + (phases.seed || 'waiting…')
+      + ' | boot=' + (phases.boot || 'waiting…');
+    var tail = lines.slice(-7).join('\n');
+    el.textContent = head + (tail ? '\n' + tail : '');
+  }
+  window.addEventListener('keydown', function(e){
+    if (e.code === 'KeyH' && el) { el.style.display = (el.style.display === 'none') ? '' : 'none'; }
+  }, true);
+  return {
+    line: function(s){
+      s = String(s); lines.push(s); if (lines.length > 40) lines.shift();
+      var m;
+      if ((m = s.match(/\[b35\] OPFS parts seeded: (\d+) B in ([\d.]+)s/))) phases.seed = 'done ' + m[2] + 's';
+      else if (s.indexOf('OPFS parts already present') !== -1) phases.seed = 'cached (repeat visit)';
+      else if (s.indexOf('OPFS seeding FAILED') !== -1) phases.seed = 'failed → blob fallback';
+      else if (s.indexOf('sync-XHR self-heal') !== -1) phases.seed = 'blob self-heal';
+      if (s.indexOf('runtime initialized') !== -1) phases.boot = 'engine up';
+      if ((m = s.match(/\[b33\] cd-stream worker bridge: idx0 ready=(\d+)/))) phases.boot = 'archive ready (' + m[1] + ')';
+      if (s.indexOf('[ABORT]') !== -1 || s.indexOf('[JSERR]') !== -1) { lines.push('‼ ' + s); }
+      ensure(); render();
+    },
+    seedProgress: function(done, total){
+      phases.seed = Math.round(done*100/total) + '% ('
+        + Math.round(done/1048576) + '/' + Math.round(total/1048576) + ' MB)';
+      ensure(); render();
+    }
+  };
+})();
+
+function b2log(line){
+  if (window.logs.length > 2000) window.logs.shift();
+  window.logs.push(line);
+  try { b2buf.push(line); } catch(e) {}
+  try { b35hud.line(line); } catch(e) {}
+}
+setInterval(function(){
+  if (b2buf.length) {
+    try { navigator.sendBeacon('/log', b2buf.join('\n')); } catch(e) {}
+    b2buf = [];
+  }
+}, 2000);
+(function(){
+  function wrap(orig, tag){
+    return function(){
+      try { b2log(tag + [...arguments].map(function(a){return String(a);}).join(' ')); } catch(e){}
+      return orig.apply(console, arguments);
+    };
+  }
+  console.log = wrap(console.log, '');
+  console.warn = wrap(console.warn, '[W] ');
+  console.error = wrap(console.error, '[E] ');
+})();
+var Module = {
+  canvas: document.getElementById('canvas'),
+  print: function(t){ b2log(String(t)); },
+  printErr: function(t){ b2log('[E] ' + String(t)); },
+  setStatus: function(t){
+    if (t && t.indexOf('Downloading data') === -1) b2log('[status] ' + t);
+    else if (t) { try { b35hud.line('[status] ' + t); } catch(e) {} }
+  },
+  onRuntimeInitialized: function(){
+    b2log('[b2] runtime initialized');
+    b2log('[b2] Module.ctx at runtime-init: ' + (Module.ctx ? Module.ctx.toString() : 'NULL'));
+  },
+  onAbort: function(what){ b2log('[ABORT] ' + what); }
+};
+window.addEventListener('error', function(e){
+  b2log('[JSERR] ' + e.message + ' @ ' + (e.filename||'') + ':' + (e.lineno||''));
+});
+// lightweight context recorder (B3 production page: no per-call GL spy)
+(function(){
+  var orig = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(type, attrs){
+    var r = orig.call(this, type, attrs);
+    b2log('[getContext] type=' + type + ' -> ' + (r ? 'OK' : 'NULL'));
+    if (r && type === 'webgl2') { window.__glwrap = true; Module.ctx = r; }
+    return r;
+  };
+})();
+
+// ---- B3.5: listener lifecycle forensics (input-death investigation) ----
+// Wrap window add/removeEventListener for the key events: emscripten's GLFW
+// attaches its key handlers at glfwInit and removes them at glfwTerminate.
+// If the engine's keyboard dies mid-game, this log shows whether the
+// listeners were actually removed (and by which call).
+(function(){
+  window.__evlog = [];
+  var origAdd = EventTarget.prototype.addEventListener;
+  var origRemove = EventTarget.prototype.removeEventListener;
+  function tag(fn){ if (!fn.__b35tag) { fn.__b35tag = 'fn' + Math.random().toString(36).slice(2,8); } return fn.__b35tag; }
+  EventTarget.prototype.addEventListener = function(type, fn, opts){
+    if (this === window && typeof type === 'string' && type.indexOf('key') === 0) {
+      window.__evlog.push(['add', type, tag(fn), Date.now()]);
+    }
+    return origAdd.call(this, type, fn, opts);
+  };
+  EventTarget.prototype.removeEventListener = function(type, fn, opts){
+    if (this === window && typeof type === 'string' && type.indexOf('key') === 0) {
+      window.__evlog.push(['remove', type, fn ? tag(fn) : 'null', Date.now()]);
+    }
+    return origRemove.call(this, type, fn, opts);
+  };
+})();
+
+// ---- B3.5: virtual-keyboard shim (TempKeyState injection) ----
+// Investigated (see B3.5 report §input): the emscripten GLFW key dispatch
+// (GLFW.onKeyChanged -> keyFunc) is alive during boot/menu/cutscene but goes
+// dead once the game transitions into gameplay (listeners verified still
+// attached; the module-internal GLFW.active staleness drops every event
+// silently). The engine's own per-frame pipeline is intact:
+//   TempKeyState --(CPad::UpdatePads, FIX_BUGS copy)--> NewKeyState
+//   --(AffectPadFromKeyBoard: GetIsKeyboardKeyDown -> action mapping)-->
+//   PCTempKeyState --(CPad::Update reconcile)--> NewState -> player input.
+// This shim writes the same fields a real keydown would (TempKeyState), so
+// the engine's own key->action mapping and control gating run unmodified.
+// Addresses mined from the production reVC.wasm (sha256 8e8175ea...):
+//   CPad::OldKeyState @ 2534448, NewKeyState @ 2535072, TempKeyState @ 2535696
+//   (UpdatePads memory.copy pairs; CKeyboardState = 0x270 bytes;
+//    VK_KEYS @ +24, ENTER @ +572, LSHIFT @ +604)
+window.b35key = function(c, down) {
+  try {
+    var u8 = Module.HEAPU8;
+    var base = 2535696 + 24 + c*2;
+    u8[base] = down ? 255 : 0; u8[base+1] = 0;
+    return true;
+  } catch(e) { return 'err ' + e; }
+};
+window.b35field = function(off, down) {
+  try {
+    var u8 = Module.HEAPU8;
+    var base = 2535696 + off;
+    u8[base] = down ? 255 : 0; u8[base+1] = 0;
+    return true;
+  } catch(e) { return 'err ' + e; }
+};
+
+// ---- B3.5: OPFS part seeding + Worker hook (runs before reVC.js) ----
+(function(){
+  var TOTAL = 327487488, NPARTS = 4, partsz = TOTAL / NPARTS; /* 81871872 exact */
+  var names = []; for (var i=0;i<NPARTS;i++) names.push('b33-gta3-'+i+'.img');
+  var b33msg = { b33opfsParts: names, b33partsz: partsz, b33total: TOTAL };
+  var workers = [];
+
+  // 2: Worker hook — deliver b33opfsParts to every pooled worker
+  var OrigWorker = window.Worker;
+  window.__b33workers = workers;
+  try {
+    class B33Worker extends OrigWorker {
+      constructor(u, o){
+        super(u, o);
+        workers.push(this);
+        try { this.postMessage(b33msg); } catch(e) {}
+      }
+    }
+    window.Worker = B33Worker;
+  } catch(e) { b2log('[b35] Worker hook unavailable: ' + e); }
+  setInterval(function(){
+    for (var i=0;i<workers.length;i++) { try { workers[i].postMessage(b33msg); } catch(e) {} }
+  }, 250);
+
+  // 1: seed OPFS parts (skip if a previous context/profile already holds them)
+  (async function(){
+    try {
+      var root = await navigator.storage.getDirectory();
+      var have = true;
+      for (var i=0;i<NPARTS;i++) {
+        try {
+          var fh = await root.getFileHandle(names[i], {create:false});
+          var st = await fh.getFile();
+          var want = (i === NPARTS-1) ? (TOTAL - partsz*(NPARTS-1)) : partsz;
+          if (st.size !== want) { have = false; break; }
+        } catch(e) { have = false; break; }
+      }
+      if (have) { b2log('[b35] OPFS parts already present ('+NPARTS+' x '+partsz+')'); return; }
+      var t0 = performance.now();
+      b2log('[b35] seeding OPFS parts from gta3.img ...');
+      // B3.10-STATIC: seed from 4 static part files on the Pages host (no
+      // Range proxy). B3.8 race-safety kept: open ALL writers before the
+      // first fetch await so pooled workers cannot steal the file locks.
+      var writers = [];
+      for (var j=0;j<NPARTS;j++) {
+        var fh2 = await root.getFileHandle(names[j], {create:true});
+        writers.push(await fh2.createWritable());
+      }
+      b2log('[b35] seed writers open (4, race-safe)');
+      var bytes = 0, lastProg4 = -1, prog = [0,0,0,0], jobs = [];
+      for (var j2=0;j2<NPARTS;j2++) {
+        (function(j){
+          jobs.push((async function(){
+            var resp = await fetch('../p/g3/'+j+'.bin');
+            if (!resp.ok || !resp.body) throw new Error('part '+j+' fetch '+resp.status);
+            var reader = resp.body.getReader();
+            var total = 0;
+            while (true) {
+              var rd = await reader.read();
+              if (rd.done) break;
+              await writers[j].write(rd.value);
+              total += rd.value.length;
+              prog[j] = total;
+              var tot = prog[0]+prog[1]+prog[2]+prog[3];
+              var prog4 = Math.floor(tot / 4194304);
+              if (prog4 !== lastProg4) { lastProg4 = prog4; try { b35hud.seedProgress(tot, TOTAL); } catch(e) {} }
+            }
+            var want = (j === NPARTS-1) ? (TOTAL - partsz*(NPARTS-1)) : partsz;
+            if (total !== want) throw new Error('part '+j+' size '+total+' != '+want);
+          })());
+        })(j2);
+      }
+      await Promise.all(jobs);
+      bytes = TOTAL;
+      for (var k=0;k<NPARTS;k++) await writers[k].close();
+      if (bytes !== TOTAL) throw new Error('gta3.img size mismatch: '+bytes);
+      b2log('[b35] OPFS parts seeded: '+TOTAL+' B in '+((performance.now()-t0)/1000).toFixed(1)+'s');
+    } catch(e) {
+      b2log('[b35] OPFS seeding FAILED: ' + e + ' (workers fall back to the blob self-heal)');
+    }
+  })();
+})();
+</script>
+<script src="reVC_data_b33.js"></script>
+<script src="reVC.js"></script>
+</body>
+</html>

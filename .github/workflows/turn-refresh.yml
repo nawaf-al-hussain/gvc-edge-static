@@ -1,0 +1,54 @@
+name: turn-refresh
+# M2.6: keeps ice-config.json fresh. Cloudflare Realtime TURN credentials have
+# a 24h max TTL; this mint every 12h guarantees overlap. Runs with two repo
+# secrets (CF_TURN_KEY_ID, CF_TURN_KEY) — no card, no account API needed:
+# rtc.live only requires the key secret as Bearer.
+permissions:
+  contents: write
+on:
+  schedule:
+    - cron: '30 0,12 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: mint credential + sanitize
+        env:
+          KID: ${{ secrets.CF_TURN_KEY_ID }}
+          KEY: ${{ secrets.CF_TURN_KEY }}
+        run: |
+          set -eu
+          code=$(curl -s -o /tmp/resp.json -w '%{http_code}' -X POST \
+            "https://rtc.live.cloudflare.com/v1/turn/keys/$KID/credentials/generate-ice-servers" \
+            -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+            -d '{"ttl":86400}')
+          if [ "$code" != "200" ]; then echo "mint failed: $code"; exit 1; fi
+          python3 - <<'EOF'
+          import json, re, datetime
+          d = json.load(open('/tmp/resp.json'))
+          ice = []
+          for s in d.get('iceServers', []):
+              urls = s.get('urls', [])
+              if isinstance(urls, str): urls = [urls]
+              urls = [u for u in urls if not re.search(r':53($|\?|@)', u)]
+              if urls:
+                  ice.append({'urls': urls, 'username': s.get('username'), 'credential': s.get('credential')})
+          assert ice, 'no ice servers after sanitize'
+          json.dump({'iceServers': ice,
+                     'minted': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                     'ttl': 86400}, open('ice-config.json', 'w'), indent=1)
+          print('ice-config groups:', len(ice))
+          EOF
+
+      - name: commit if changed
+        run: |
+          git config user.name "turn-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ice-config.json
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "refresh turn credentials $(date -u +%FT%TZ)"
+          git push

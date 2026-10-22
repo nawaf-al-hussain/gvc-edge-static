@@ -1,0 +1,391 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="coi-serviceworker.js"></script><!-- B3.10-STATIC: SW injects COOP/COEP (Pages cannot set headers) so SAB/pthreads work -->
+<link rel="icon" href="data:,">
+<title>B3.8 ghost-MP M1+M2.1+M2.2 (isolated prototype) — pinned reVC miami 1b9a5897</title>
+<style>
+  html, body { margin:0; padding:0; background:#000; height:100%; overflow:hidden; }
+  canvas { width:100vw; height:100vh; display:block; image-rendering:auto; }
+  /* [B3.8-M2] in-view ghost overlay: transparent, exactly over #canvas, never intercepts input */
+  #gmp-overlay { position:absolute; top:0; left:0; width:100vw; height:100vh;
+    pointer-events:none; z-index:99999; }
+  /* [B3.8-MP] ghost-multiplayer panel (diagnostics overlay; DOM-only, no engine calls) */
+  #gmp-panel { position:fixed; top:8px; right:8px; z-index:100000; width:318px;
+    background:rgba(0,0,0,.78); color:#9cf; font:11px/1.5 monospace;
+    border:1px solid #357; border-radius:6px; padding:8px 10px; }
+  #gmp-panel h4 { margin:0 0 4px 0; font-size:11px; color:#cef; letter-spacing:.4px; }
+  #gmp-panel .row { margin:2px 0; }
+  #gmp-panel input { background:#020408; color:#9cf; border:1px solid #357; border-radius:3px;
+    font:11px monospace; padding:2px 4px; width:110px; }
+  #gmp-panel button { background:#123; color:#cef; border:1px solid #468; border-radius:3px;
+    font:11px monospace; padding:2px 8px; cursor:pointer; margin-left:4px; }
+  #gmp-panel button:hover { background:#1a3a5a; }
+  #gmp-panel .sp-link a { color:#7da7ff; }
+  #gmp-panel pre { margin:4px 0 0 0; white-space:pre-wrap; color:#8f8; }
+  #gmp-panel .netline { color:#fc6; }
+  #gmp-panel .err { color:#f88; }
+  #gmp-roster .me { color:#fff; }
+  #gmp-roster .stale { color:#666; }
+  #gmp-panel .cchip { display:inline-block; width:8px; height:8px; border-radius:2px;
+    margin-right:5px; vertical-align:baseline; }
+  #gmp-minimap { background:#0a0f14; border:1px solid #246; margin-top:4px; }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="640" height="448"></canvas>
+<canvas id="gmp-overlay" width="640" height="448"></canvas><!-- [B3.8-M2] -->
+
+<!-- [B3.8-MP] isolated ghost-multiplayer page. The game canvas, boot flow and
+     every engine-facing script below are the 8B-5 staged page except three
+     marked deltas: (1) Module.locateFile override so the runtime loads from
+     /revc/ absolute paths, (2) the gta3.img seed fetch routed through
+     locateFile, (3) the four gmp-*.js script tags at the end.
+     Single-player code paths and the five runtime files are untouched. -->
+<div id="gmp-panel">
+  <h4>Ghost Multiplayer M1 — B3.8 <button id="gmp-collapse" style="float:right;margin:0">–</button></h4>
+  <div id="gmp-body">
+    <div class="row sp-link">Single Player: <a href="../revc/index.html">open the established game page</a></div>
+    <div class="row">Room <input id="gmp-room" maxlength="24" autocomplete="off" spellcheck="false">
+      Name <input id="gmp-name" maxlength="16" autocomplete="off" spellcheck="false"></div>
+    <div class="row"><button id="gmp-join">Join room</button><button id="gmp-leave">Leave</button>
+      <span class="netline" id="gmp-netstate">off</span></div>
+    <div class="row err" id="gmp-neterr"></div>
+    <div id="gmp-roster" class="row"></div>
+    <canvas id="gmp-minimap" width="296" height="200"></canvas>
+    <pre id="gmp-tel">telemetry: waiting for sampler…</pre>
+    <pre id="gmp-sync">sync: (waiting for transport…)</pre><!-- [B3.8-M2.1] -->
+  </div>
+</div>
+
+<script>
+// B3.5 production test page (base = b3/web/index.html; 8B-5 HUD delta; B3.8-MP deltas).
+// Adds, for the B33 bridge (see b34_pre.js):
+//   1. OPFS part seeding: gta3.img (327,487,488 B) is streamed ONCE from the
+//      webroot into 4 OPFS part files (b33-gta3-0..3.img, 81,871,872 B each —
+//      exact), chunked writer, no Blob and no JS-heap copy of the image.
+//   2. A Worker constructor hook: every pooled pthread worker receives the
+//      {b33opfsParts,...} message on spawn and a 250 ms re-broadcast.
+window.logs = [];
+var b2buf = [];
+
+// ---- Phase 8B-4: on-page loading HUD (black-screen visibility) ----
+var b35hud = (function(){
+  var el, lines = [], phases = { seed: null, boot: null };
+  function ensure(){
+    if (el || !document.body) return;
+    el = document.createElement('div');
+    el.style.cssText = 'position:fixed;top:8px;left:8px;z-index:99999;max-width:680px;'
+      + 'background:rgba(0,0,0,.72);color:#9f9;font:11px/1.45 monospace;'
+      + 'padding:8px 10px;border:1px solid #363;border-radius:6px;'
+      + 'white-space:pre-wrap;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  function render(){
+    if (!el) return;
+    var t = ((performance.now() - (window.__b35t0 || (window.__b35t0 = performance.now())))/1000).toFixed(0);
+    var head = 'B3.5 preview — elapsed ' + t + 's   [press H to toggle this box]'
+      + '\nfirst visit downloads ~502 MB — black screen until the menu appears;'
+      + '\nconsole 404s (/log, favicon) are harmless noise'
+      + '\nisolated=' + (window.crossOriginIsolated === true ? 'yes' : 'NO')
+      + ' | seed=' + (phases.seed || 'waiting…')
+      + ' | boot=' + (phases.boot || 'waiting…');
+    var tail = lines.slice(-7).join('\n');
+    el.textContent = head + (tail ? '\n' + tail : '');
+  }
+  window.addEventListener('keydown', function(e){
+    if (e.code === 'KeyH' && el) { el.style.display = (el.style.display === 'none') ? '' : 'none'; }
+  }, true);
+  return {
+    line: function(s){
+      s = String(s); lines.push(s); if (lines.length > 40) lines.shift();
+      var m;
+      if ((m = s.match(/\[b35\] OPFS parts seeded: (\d+) B in ([\d.]+)s/))) phases.seed = 'done ' + m[2] + 's';
+      else if (s.indexOf('OPFS parts already present') !== -1) phases.seed = 'cached (repeat visit)';
+      else if (s.indexOf('OPFS seeding FAILED') !== -1) phases.seed = 'failed → blob fallback';
+      else if (s.indexOf('sync-XHR self-heal') !== -1) phases.seed = 'blob self-heal';
+      if (s.indexOf('runtime initialized') !== -1) phases.boot = 'engine up';
+      if ((m = s.match(/\[b33\] cd-stream worker bridge: idx0 ready=(\d+)/))) phases.boot = 'archive ready (' + m[1] + ')';
+      if (s.indexOf('[ABORT]') !== -1 || s.indexOf('[JSERR]') !== -1) { lines.push('‼ ' + s); }
+      ensure(); render();
+    },
+    seedProgress: function(done, total){
+      phases.seed = Math.round(done*100/total) + '% ('
+        + Math.round(done/1048576) + '/' + Math.round(total/1048576) + ' MB)';
+      ensure(); render();
+    }
+  };
+})();
+
+function b2log(line){
+  if (window.logs.length > 2000) window.logs.shift();
+  window.logs.push(line);
+  try { b2buf.push(line); } catch(e) {}
+  try { b35hud.line(line); } catch(e) {}
+}
+setInterval(function(){
+  if (b2buf.length) {
+    try { navigator.sendBeacon('/log', b2buf.join('\n')); } catch(e) {}
+    b2buf = [];
+  }
+}, 2000);
+(function(){
+  function wrap(orig, tag){
+    return function(){
+      try { b2log(tag + [...arguments].map(function(a){return String(a);}).join(' ')); } catch(e){}
+      return orig.apply(console, arguments);
+    };
+  }
+  console.log = wrap(console.log, '');
+  console.warn = wrap(console.warn, '[W] ');
+  console.error = wrap(console.error, '[E] ');
+})();
+
+// [B3.8-MP] delta 1/3: the MP page lives at /revc-mp/ but loads the runtime
+// from the established /revc/ paths (same-origin). locateFile routes the data
+// package and the wasm there; nothing about the files themselves changes.
+var Module = {
+  canvas: document.getElementById('canvas'),
+  // [B3.9] propagate the page's ?v= onto runtime asset fetches so every
+  // engine build change reaches persistent-profile browsers without stale
+  // HTTP-cache serving (the byte-locked production build keeps a fixed v).
+  locateFile: function(path){
+    var v = (location.search.match(/[?&]v=([^&]+)/) || [])[1];
+    return path + (v ? '?v=' + v : '');
+  },
+  print: function(t){ b2log(String(t)); },
+  printErr: function(t){ b2log('[E] ' + String(t)); },
+  setStatus: function(t){
+    if (t && t.indexOf('Downloading data') === -1) b2log('[status] ' + t);
+    else if (t) { try { b35hud.line('[status] ' + t); } catch(e) {} }
+  },
+  onRuntimeInitialized: function(){
+    b2log('[b2] runtime initialized');
+    b2log('[b2] Module.ctx at runtime-init: ' + (Module.ctx ? Module.ctx.toString() : 'NULL'));
+  },
+  onAbort: function(what){ b2log('[ABORT] ' + what); }
+};
+window.addEventListener('error', function(e){
+  b2log('[JSERR] ' + e.message + ' @ ' + (e.filename||'') + ':' + (e.lineno||''));
+});
+// lightweight context recorder (B3 production page: no per-call GL spy)
+(function(){
+  var orig = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(type, attrs){
+    var r = orig.call(this, type, attrs);
+    b2log('[getContext] type=' + type + ' -> ' + (r ? 'OK' : 'NULL'));
+    if (r && type === 'webgl2') { window.__glwrap = true; Module.ctx = r; }
+    return r;
+  };
+})();
+
+// ---- B3.5: listener lifecycle forensics ----
+(function(){
+  window.__evlog = [];
+  var origAdd = EventTarget.prototype.addEventListener;
+  var origRemove = EventTarget.prototype.removeEventListener;
+  function tag(fn){ if (!fn.__b35tag) { fn.__b35tag = 'fn' + Math.random().toString(36).slice(2,8); } return fn.__b35tag; }
+  EventTarget.prototype.addEventListener = function(type, fn, opts){
+    if (this === window && typeof type === 'string' && type.indexOf('key') === 0) {
+      window.__evlog.push(['add', type, tag(fn), Date.now()]);
+    }
+    return origAdd.call(this, type, fn, opts);
+  };
+  EventTarget.prototype.removeEventListener = function(type, fn, opts){
+    if (this === window && typeof type === 'string' && type.indexOf('key') === 0) {
+      window.__evlog.push(['remove', type, fn ? tag(fn) : 'null', Date.now()]);
+    }
+    return origRemove.call(this, type, fn, opts);
+  };
+})();
+
+// ---- B3.5: virtual-keyboard shim (TempKeyState injection; harness input path) ----
+// Addresses mined from the production reVC.wasm (sha256 8e8175ea...):
+//   CPad::OldKeyState @ 2534448, NewKeyState @ 2535072, TempKeyState @ 2535696
+window.b35key = function(c, down) {
+  try {
+    var u8 = Module.HEAPU8;
+    var base = 2535696 + 24 + c*2;
+    u8[base] = down ? 255 : 0; u8[base+1] = 0;
+    return true;
+  } catch(e) { return 'err ' + e; }
+};
+window.b35field = function(off, down) {
+  try {
+    var u8 = Module.HEAPU8;
+    var base = 2535696 + off;
+    u8[base] = down ? 255 : 0; u8[base+1] = 0;
+    return true;
+  } catch(e) { return 'err ' + e; }
+};
+
+// ---- B3.5: OPFS part seeding (runs before reVC.js) ----
+// [B3.8 rev2] The B3.4-era Worker hook (construction-time b33opfsParts
+// postMessage + 250 ms re-broadcast to every pooled worker) is DELIBERATELY
+// ABSENT on this page. Measured on 2026-10-19: Chromium allows exactly ONE
+// open sync access handle per file browser-wide, so only the cd-stream
+// worker can ever hold the OPFS bridge. Page delivery can never reach the
+// cd-stream worker before its pthread claim (it starves at attach), but the
+// re-broadcast DOES reach other workers, whose open attempts then conflict
+// with the handle holder; the loser's catch poisons its B33.failed[0] and
+// b33_img_ready() returns -1, forcing the engine into the 327 MB RAM-blob
+// self-heal (beacons: em-pthread-1 held all 4 handles while the cd-stream
+// check printed ready=-1; boot deadline/OOM followed on the 2-core sandbox).
+// With no page delivery, every worker relies solely on the glue's own
+// self-serve at top level; the first-constructed worker (claimed by
+// CdStreamInit) starts its OPFS IO first and wins the race, and nobody is
+// poisoned. Fresh profiles are still covered by the page seeding below.
+(function(){
+  var TOTAL = 327487488, NPARTS = 4, partsz = TOTAL / NPARTS; /* 81871872 exact */
+  var names = []; for (var i=0;i<NPARTS;i++) names.push('b33-gta3-'+i+'.img');
+
+  // 1: seed OPFS parts (skip if a previous context/profile already holds them)
+  (async function(){
+    try {
+      var root = await navigator.storage.getDirectory();
+      var have = true;
+      for (var i=0;i<NPARTS;i++) {
+        try {
+          var fh = await root.getFileHandle(names[i], {create:false});
+          var st = await fh.getFile();
+          var want = (i === NPARTS-1) ? (TOTAL - partsz*(NPARTS-1)) : partsz;
+          if (st.size !== want) { have = false; break; }
+        } catch(e) { have = false; break; }
+      }
+      if (have) { b2log('[b35] OPFS parts already present ('+NPARTS+' x '+partsz+')'); return; }
+      var t0 = performance.now();
+      b2log('[b35] seeding OPFS parts from gta3.img ...');
+      // [B3.8-MP] delta 2/3: fetch through locateFile -> /revc/gta3.img
+      // (the deployment proxies that exact route; SP page behavior unchanged)
+      // B3.8 fix: acquire ALL four writers BEFORE awaiting the fetch. Workers
+      // self-serve via createSyncAccessHandle as soon as they spawn; if one
+      // lands between getFileHandle(create) and createWritable it wins the
+      // file lock and createWritable throws NoModificationAllowedError
+      // (measured twice on 2026-10-19). Workers cannot exist before the
+      // engine boots (~2 s), so opening the writers first, within ~0.3 s of
+      // page parse, removes the race window.
+      var writers = [];
+      for (var j=0;j<NPARTS;j++) {
+        var fh2 = await root.getFileHandle(names[j], {create:true});
+        writers.push(await fh2.createWritable());
+      }
+      b2log('[b35] seed writers open (4, race-safe)');
+      // B3.8: parallel per-part Range fetches when the server honors Range
+      // (4x faster first visit); falls back to the proven single-stream
+      // path when a proxy answers 200 (the asset proxy ignores Range).
+      // B3.10-STATIC: 4 static part files on the Pages host (no Range proxy
+      // dependency). Writers are already open above (B3.8 race-safety).
+      var bytes = 0, lastProg4 = -1, prog = [0,0,0,0], jobs = [];
+      for (var j2=0;j2<NPARTS;j2++) {
+        (function(j){
+          jobs.push((async function(){
+            var resp = await fetch('../p/g3/'+j+'.bin');
+            if (!resp.ok || !resp.body) throw new Error('part '+j+' fetch '+resp.status);
+            var reader = resp.body.getReader();
+            var total = 0;
+            while (true) {
+              var rd = await reader.read();
+              if (rd.done) break;
+              await writers[j].write(rd.value);
+              total += rd.value.length;
+              prog[j] = total;
+              var tot = prog[0]+prog[1]+prog[2]+prog[3];
+              var prog4 = Math.floor(tot / 4194304);
+              if (prog4 !== lastProg4) { lastProg4 = prog4; try { b35hud.seedProgress(tot, TOTAL); } catch(e) {} }
+            }
+            var want = (j === NPARTS-1) ? (TOTAL - partsz*(NPARTS-1)) : partsz;
+            if (total !== want) throw new Error('part '+j+' size '+total+' != '+want);
+          })());
+        })(j2);
+      }
+      await Promise.all(jobs);
+      bytes = TOTAL;
+      for (var k=0;k<NPARTS;k++) await writers[k].close();
+      if (bytes !== TOTAL) throw new Error('gta3.img size mismatch: '+bytes);
+      b2log('[b35] OPFS parts seeded: '+TOTAL+' B in '+((performance.now()-t0)/1000).toFixed(1)+'s');
+    } catch(e) {
+      b2log('[b35] OPFS seeding FAILED: ' + e + ' (workers fall back to the blob self-heal)');
+      try { b2log('[b35] seed-fail-stack: ' + String(e && e.stack ? e.stack : '').slice(0, 400)); } catch(e2) {}
+      try { for (var w2=0; w2<writers.length; w2++) { writers[w2].close(); } } catch(e3) {}
+    }
+  })();
+})();
+
+// ---- [B3.8-MP] ghost-MP panel plumbing (DOM-only; no engine interaction) ----
+(function(){
+  // keep keystrokes inside the panel away from the game's window listeners
+  var panel = document.getElementById('gmp-panel');
+  ['keydown','keyup','keypress'].forEach(function(t){
+    panel.addEventListener(t, function(e){ e.stopPropagation(); });
+  });
+  document.getElementById('gmp-collapse').addEventListener('click', function(){
+    var b = document.getElementById('gmp-body');
+    b.style.display = (b.style.display === 'none') ? '' : 'none';
+    this.textContent = (b.style.display === 'none') ? '+' : '–';
+  });
+})();
+</script>
+<!-- [B3.8-MP] delta 3/3: ghost-MP modules + the byte-locked runtime from /revc/ -->
+<script>
+// [B3.8-M2.2] rAF liveness probe (display-only): counts requestAnimationFrame
+// callbacks. In a HIDDEN tab rAF does not fire at all — if the engine's main
+// loop is rAF-driven, the game itself freezes (no boot progress, no ped
+// motion, stale telemetry) while setIntervals keep ticking. This probe makes
+// that state visible in the sync panel instead of guessing.
+window.__gmpRaf = { n: 0, t: 0 };
+(function gmpRafProbe(){
+  __gmpRaf.n++;
+  __gmpRaf.t = Date.now();
+  requestAnimationFrame(gmpRafProbe);
+})();
+</script>
+<script src="peerjs.min.js"></script>
+<script src="gmp-ped.js"></script><!-- [B3.9] real 3D remote-player peds via engine bridge (gmp3_*) -->
+<script src="gmp-telemetry.js"></script>
+<script src="gmp-net.js"></script>
+<script src="gmp-ui.js"></script>
+<script src="gmp-cam.js"></script><!-- [B3.8-M2] read-only camera sampler + projector -->
+<script src="gmp-overlay.js"></script><!-- [B3.8-M2] display-layer ghost markers + [B3.8-M2.1] edge indicators/waiting chip -->
+<script>
+// [B3.8-M2.2] Engine-slot probe — honest second-tab warning (panel-level).
+//
+// ROOT CAUSE (demonstrated 2026-10-19, M2.2 report): Chromium allows exactly
+// ONE open sync access handle per OPFS file browser-wide; the engine's OPFS
+// bridge holds it for the engine's lifetime. A SECOND game tab in the SAME
+// browser cannot reach gameplay (its main thread deadlocks inside a native
+// sync OPFS call — CDP Debugger.pause never fires) while its MP panel still
+// joins rooms: roster co-presence with ZERO state frames — the owner's
+// "no indication at all".
+//
+// This probe does NOT gate script injection (dynamic injection changed the
+// B33 worker race timing and broke cold boots — measured). It only RECORDS
+// slot ownership so the panel (gmp-ui) can tell the second-tab player exactly
+// what is wrong instead of leaving them with a silent hang.
+window.__gmpSlot = { held: null, checkedAt: 0 };
+if (navigator.locks && navigator.locks.request) {
+  navigator.locks.request('gvc8b8-engine-slot', { ifAvailable: true }, function (lock) {
+    window.__gmpSlot.held = lock ? 'mine' : 'other';
+    window.__gmpSlot.checkedAt = Date.now();
+    if (lock) {
+      return new Promise(function (res) { window.__gmpReleaseEngineSlot = res; });
+    }
+    // lock held by another tab: surface it immediately in the panel
+    var el = document.getElementById('gmp-netstate');
+    if (el && !el.textContent) {
+      el.textContent = 'second tab in this browser — the game engine can only run in one tab ' +
+                       '(Chromium OPFS limit). Use a separate browser profile/window for player 2.';
+    }
+  }).catch(function () {});
+  window.addEventListener('pagehide', function () {
+    try { if (window.__gmpReleaseEngineSlot) window.__gmpReleaseEngineSlot(); } catch (e) {}
+  });
+}
+</script>
+<script>/* [B3.9] version-stamped engine script tags (see locateFile note) */
+(function(){var v=(location.search.match(/[?&]v=([^&]+)/)||[])[1];var q=v?'?v='+v:'';
+document.write('<script src="reVC_data_b33.js'+q+'"><\/script>');
+document.write('<script src="reVC.js'+q+'"><\/script>');})();
+</script>
+</body>
+</html>
