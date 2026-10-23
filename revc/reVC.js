@@ -1479,6 +1479,33 @@ function b33_img_fetch_sync(idx) {
     urls: {}
   };
   if (B33.blobs[idx] !== undefined) return 1;
+  /* B3.10-PAGES: static hosting serves no single-file gta3.img; a worker
+   * that lost the OPFS handle race must self-heal from the 4 static parts.
+   * sync XHR works in pthread workers; self.location is this script's URL,
+   * so ../p/g3/ resolves against the deployed page tree. */
+  try {
+    var PB3 = new URL("../p/g3/", self.location.href).href;
+    var TOT3 = 327487488, PZ3 = 81871872, ch3 = [], got3 = 0;
+    for (var q3 = 0; q3 < 4; q3++) {
+      var xq3 = new XMLHttpRequest;
+      xq3.open("GET", PB3 + q3 + ".bin", false);
+      xq3.responseType = "arraybuffer";
+      xq3.send();
+      if ((xq3.status | 0) !== 200 || !xq3.response) throw new Error("part " + q3 + " status " + xq3.status);
+      if (xq3.response.byteLength !== (q3 < 3 ? PZ3 : TOT3 - PZ3 * 3)) throw new Error("part " + q3 + " size " + xq3.response.byteLength);
+      ch3.push(xq3.response);
+      got3 += xq3.response.byteLength;
+    }
+    if (got3 !== TOT3) throw new Error("total " + got3);
+    var bl3 = new Blob(ch3);
+    B33.blobs[idx] = bl3;
+    B33.sizes[idx] = bl3.size;
+    B33.ready[idx] = 1;
+    console.log("[b33] sync-XHR self-heal (pages 4-part): " + bl3.size + " B");
+    return 1;
+  } catch (eP3) {
+    console.log("[b33] pages 4-part self-heal failed: " + eP3);
+  }
   var url = (B33.urls && B33.urls[idx]) || "gta3.img";
   try {
     var x = new XMLHttpRequest;
