@@ -193,6 +193,35 @@ if (ENVIRONMENT_IS_NODE) {
       self.postMessage(o);
     } catch (e) {}
   }
+  /* B3.10-PAGES: file-mode attach for handle-race losers. Sync access
+   * handles are exclusive browser-wide, so a loser can never open them -
+   * but plain File objects cost no RAM and serve synchronous reads. */
+  (async function() {
+    try {
+      for (var tF = 0; tF < 40; tF++) {
+        await new Promise(function(rF) { setTimeout(rF, 250); });
+        if (globalThis.B33 && B33.opfs && B33.opfs[0] && B33.ready[0] === 1) return;
+        if (globalThis.B33 && B33.files && B33.files[0]) return;
+      }
+      var rootF = await navigator.storage.getDirectory();
+      var namesF = ["b33-gta3-0.img", "b33-gta3-1.img", "b33-gta3-2.img", "b33-gta3-3.img"];
+      var filesF = [];
+      for (var iF = 0; iF < namesF.length; iF++) {
+        var fhF = await rootF.getFileHandle(namesF[iF], { create: false });
+        filesF.push(await fhF.getFile());
+      }
+      globalThis.B33 = globalThis.B33 || { blobs: {}, sizes: {}, ready: {}, failed: {}, urls: {} };
+      B33.files = B33.files || {};
+      B33.files[0] = filesF;
+      if (!B33.partsz) B33.partsz = 81871872;
+      if (!B33.sizes[0]) B33.sizes[0] = 327487488;
+      B33.ready[0] = 1;
+      delete B33.failed[0];
+      beacon({ ch: "b33ready", idx: 0, wid: self.name || "?", size: 327487488, parts: 4, mode: "opfs-file" });
+    } catch (eF2) {
+      beacon({ ch: "b33selfserve", wid: self.name || "?", skipped: ("file-mode: " + String(eF2)).slice(0, 80) });
+    }
+  })();
   self.addEventListener("message", function(e) {
     var d = e.data;
     if (!d || (!d.b33 && !d.b33opfsParts)) return;
@@ -1595,6 +1624,38 @@ function b33_img_read(idx, off, buf, len) {
       return done;
     } catch (e0) {
       console.log("[b33] opfs read error idx=" + idx + " off=" + off + ": " + e0);
+      return -1;
+    }
+  }
+  /* B3.10-PAGES: file-mode reads (handle-race losers). Disk-backed File
+   * objects are shareable across workers; FileReaderSync on file.slice is
+   * synchronous in workers. Zero RAM unlike the full-image blob. */
+  var fparts = (!parts && B33.files && B33.files[idx]) ? B33.files[idx] : null;
+  if (fparts) {
+    var partszF = B33.partsz | 0;
+    if (!partszF) return -1;
+    var doneF = 0;
+    try {
+      var frs = B33.frs || (B33.frs = new FileReaderSync());
+      while (len > 0) {
+        var piF = (off / partszF) | 0;
+        var poF = off - piF * partszF;
+        if (piF < 0 || piF >= fparts.length || poF < 0) return -1;
+        var wantF = Math.min(len, partszF - poF);
+        var abF = frs.readAsArrayBuffer(fparts[piF].slice(poF, poF + wantF));
+        var gotF = abF ? (abF.byteLength | 0) : 0;
+        if (gotF <= 0) {
+          if (off + doneF >= (B33.sizes ? (B33.sizes[idx] | 0) : 0)) break;
+          return -1;
+        }
+        new Uint8Array(GROWABLE_HEAP_U8().buffer, buf + doneF, gotF).set(new Uint8Array(abF));
+        doneF += gotF;
+        off += gotF;
+        len -= gotF;
+      }
+      return doneF;
+    } catch (eF) {
+      console.log("[b33] file read error idx=" + idx + " off=" + off + ": " + eF);
       return -1;
     }
   }
