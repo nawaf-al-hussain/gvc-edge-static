@@ -108,7 +108,7 @@ if (ENVIRONMENT_IS_NODE) {
 
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-// include: /tmp/my-project/b39-build/b3/scripts/b34_pre.js
+// include: /home/z/my-project/wt-b35/b3/scripts/b34_pre.js
 // B3.3 delivery receiver (--pre-js): runs at glue top-level in EVERY
 // environment, including each pooled pthread worker. Uses
 // addEventListener('message') which COEXISTS with Emscripten's
@@ -402,7 +402,7 @@ if (ENVIRONMENT_IS_NODE) {
   };
 })();
 
-// end include: /tmp/my-project/b39-build/b3/scripts/b34_pre.js
+// end include: /home/z/my-project/wt-b35/b3/scripts/b34_pre.js
 // Sometimes an existing Module object exists with properties
 // meant to overwrite the default module functionality. Here
 // we collect those properties and reapply _after_ we configure
@@ -867,7 +867,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   if (Module["wasmMemory"]) {
     wasmMemory = Module["wasmMemory"];
   } else {
-    var INITIAL_MEMORY = Module["INITIAL_MEMORY"] || 134217728;
+    var INITIAL_MEMORY = Module["INITIAL_MEMORY"] || 67108864;
     legacyModuleProp("INITIAL_MEMORY", "INITIAL_MEMORY");
     assert(INITIAL_MEMORY >= 65536, "INITIAL_MEMORY should be larger than STACK_SIZE, was " + INITIAL_MEMORY + "! (STACK_SIZE=" + 65536 + ")");
     /** @suppress {checkTypes} */ wasmMemory = new WebAssembly.Memory({
@@ -877,7 +877,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       // https://github.com/emscripten-core/emscripten/issues/14130
       // And in the pthreads case we definitely need to emit a maximum. So
       // always emit one.
-      "maximum": 16384,
+      "maximum": 32768,
       "shared": true
     });
   }
@@ -1446,13 +1446,13 @@ function dbg(...args) {
 // end include: runtime_debug.js
 // === Body ===
 var ASM_CONSTS = {
-  445853: $0 => {
+  444493: $0 => {
     if (!$0) {
       AL.alcErr = 40964;
       return 1;
     }
   },
-  445901: $0 => {
+  444541: $0 => {
     if (!AL.currentCtx) {
       err("alGetProcAddress() called without a valid context");
       return 1;
@@ -12590,7 +12590,7 @@ var getHeapMax = () => // Stay one Wasm page short of 4GB: while e.g. Chrome is 
 // full 4GB Wasm memories, the size will wrap back to 0 bytes in Wasm side
 // for any code that deals with heap sizes, which would require special
 // casing all heap size related code to treat 0 specially.
-1073741824;
+2147483648;
 
 var growMemory = size => {
   var b = wasmMemory.buffer;
@@ -14526,9 +14526,11 @@ var GLFW = {
           // GLFW_DEPTH_BITS
           stencil: (GLFW.hints[135174] > 0),
           // GLFW_STENCIL_BITS
-          alpha: (GLFW.hints[135172] > 0)
+          alpha: (GLFW.hints[135172] > 0),
+          // GLFW_ALPHA_BITS
+          preserveDrawingBuffer: true
         };
-        // GLFW_ALPHA_BITS
+        /* [b2glfw] B3.x evidence-harness tweak (documented in B2 §toolchain-local) */ console.log("[b2glfw] contextAttributes=" + JSON.stringify(contextAttributes));
         Browser.createContext(Module["canvas"], /*useWebGL=*/ true, /*setInModule=*/ true, contextAttributes);
       } else {
         Browser.init();
@@ -15604,20 +15606,6 @@ var _free = createExportWrapper("free", 1);
 
 var _malloc = createExportWrapper("malloc", 1);
 
-var _gmp3_spawn = Module["_gmp3_spawn"] = createExportWrapper("gmp3_spawn", 5);
-
-var _gmp3_move = Module["_gmp3_move"] = createExportWrapper("gmp3_move", 5);
-
-var _gmp3_remove = Module["_gmp3_remove"] = createExportWrapper("gmp3_remove", 1);
-
-var _gmp3_out = Module["_gmp3_out"] = createExportWrapper("gmp3_out", 0);
-
-var _gmp3_keybase = Module["_gmp3_keybase"] = createExportWrapper("gmp3_keybase", 0);
-
-var _gmp3_local = Module["_gmp3_local"] = createExportWrapper("gmp3_local", 1);
-
-var _gmp3_query = Module["_gmp3_query"] = createExportWrapper("gmp3_query", 2);
-
 var _main = Module["_main"] = createExportWrapper("__main_argc_argv", 2);
 
 var _fflush = createExportWrapper("fflush", 1);
@@ -15676,7 +15664,7 @@ var dynCall_iiiiijj = Module["dynCall_iiiiijj"] = createExportWrapper("dynCall_i
 
 var dynCall_iiiiiijj = Module["dynCall_iiiiiijj"] = createExportWrapper("dynCall_iiiiiijj", 10);
 
-var _gGameState = Module["_gGameState"] = 4479912;
+var _gGameState = Module["_gGameState"] = 4478456;
 
 // include: postamble.js
 // === Auto-generated postamble setup entry stuff ===
