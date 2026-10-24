@@ -19,6 +19,28 @@
 // MI_COP=1, MI_HFYST=9, MI_HMYST=11, MI_HFYRI=13, MI_HMOST=12).
 'use strict';
 window.GMPped = (function () {
+  // [B3.10c-READY] gate every engine export on REAL runtime init.
+  // Module._gmp3_* wrapper properties exist from reVC.js parse time, but the
+  // wrappers abort() the runtime if called before emscripten initRuntime()
+  // (assert 'native function ... called before runtime initialization').
+  // Observed live: an early ghost snapshot (fast MP join) -> _gmp3_spawn ->
+  // abort -> engine dead before gameplay. Hook onRuntimeInitialized (gmp-ped
+  // loads before the engine script tags) and gate M() on it.
+  window.__gmpEngineReady = false;
+  (function () {
+    var hook = function () { window.__gmpEngineReady = true; };
+    if (window.Module) {
+      if (typeof window.Module.onRuntimeInitialized === 'function') {
+        var orig = window.Module.onRuntimeInitialized;
+        window.Module.onRuntimeInitialized = function () {
+          window.__gmpEngineReady = true;
+          try { orig.apply(this, arguments); } catch (e) {}
+        };
+      } else {
+        window.Module.onRuntimeInitialized = hook;
+      }
+    }
+  })();
   var MODELS = [7, 1, 9, 11, 13, 12];
   var SNAP_TTL_MS = 5000;      // peer silence -> despawn
   var RENDER_DELAY_MS = 110;   // interpolation buffer delay
@@ -38,6 +60,7 @@ window.GMPped = (function () {
   var mySid = null;
 
   function M() {
+    if (!window.__gmpEngineReady) return null; /* [B3.10c-READY] no pre-init calls */
     return (window.Module && window.Module._gmp3_spawn) ? window.Module : null;
   }
 

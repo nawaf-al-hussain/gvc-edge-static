@@ -3,6 +3,44 @@
 <head>
 <meta charset="utf-8">
 <script src="coi-serviceworker.js"></script><!-- B3.10-STATIC: SW injects COOP/COEP (Pages cannot set headers) so SAB/pthreads work -->
+<script>/* [B3.10b-ISO]: deterministic first-visit isolation recovery.
+ coi-serviceworker's register/updatefound reload race can leave the FIRST visit
+ unisolated (observed live on github.io: no reload ever fires, SAB pthread
+ postMessage throws, boot stalls on loading-workers/wasm-instantiate forever).
+ Backup: from 4s, if still not isolated while an SW registration exists,
+ reload ONCE at 8s (bounded, max 2 per tab via sessionStorage). If isolation
+ is achieved, self-clears. If impossible, logs a typed boot message. */
+(function(){
+  if (window.crossOriginIsolated !== false) return;
+  var tries = 0;
+  function say(m){ try { (typeof b2log === 'function' ? b2log : function(x){console.warn(x);})('[b35] ' + m); } catch(e){} }
+  var iv = setInterval(function(){
+    if (window.crossOriginIsolated === true) {
+      clearInterval(iv);
+      try { sessionStorage.removeItem('coiBakReloads'); } catch(e){}
+      return;
+    }
+    tries++;
+    if (tries < 4) return; /* first act at ~4s: give the SW a fair chance */
+    if (!navigator.serviceWorker) { clearInterval(iv); say('cross-origin isolation unavailable (no ServiceWorker) - engine needs SAB/pthreads and cannot start here'); return; }
+    navigator.serviceWorker.getRegistration().then(function(r){
+      if (window.crossOriginIsolated === true) { clearInterval(iv); return; }
+      if (!r) { if (tries >= 12) { clearInterval(iv); say('isolation not achieved (no SW registration) - engine cannot start (SAB/pthreads)'); } return; }
+      if (tries >= 8) {
+        clearInterval(iv);
+        var n = 0; try { n = parseInt(sessionStorage.getItem('coiBakReloads') || '0', 10) || 0; } catch(e){}
+        if (n < 2) {
+          try { sessionStorage.setItem('coiBakReloads', String(n + 1)); } catch(e){}
+          say('first visit not isolated - reloading to activate COOP/COEP service worker (attempt ' + (n + 1) + '/2)');
+          location.reload();
+        } else {
+          say('isolation failed after reload retries - engine cannot start (SAB/pthreads). Hard-refresh once; if it persists the browser is blocking service workers.');
+        }
+      }
+    }).catch(function(){});
+  }, 1000);
+})();
+</script>
 <link rel="icon" href="data:,">
 <title>B3.8 ghost-MP M1+M2.1+M2.2 (isolated prototype) — pinned reVC miami 1b9a5897</title>
 <style>
